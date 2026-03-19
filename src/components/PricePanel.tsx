@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   AreaChart,
   Area,
@@ -11,40 +11,52 @@ import {
   ReferenceLine,
   CartesianGrid,
 } from 'recharts';
-import { priceHistory } from '@/data/news-events';
+import { getPriceDataForHorizon, priceHistory, ForecastHorizon } from '@/data/news-events';
 
 type Benchmark = 'wti' | 'brent';
 
-export default function PricePanel() {
+export default function PricePanel({ horizon }: { horizon: ForecastHorizon }) {
   const [benchmark, setBenchmark] = useState<Benchmark>('brent');
 
+  const rawData = useMemo(() => getPriceDataForHorizon(horizon), [horizon]);
+
   const data = useMemo(() => {
-    return priceHistory.map((p) => ({
+    return rawData.map((p) => ({
       date: p.date,
       price: benchmark === 'brent' ? p.brent : p.wti,
       predicted: p.predicted || false,
     }));
-  }, [benchmark]);
+  }, [rawData, benchmark]);
 
-  const currentPrice = data.filter((d) => !d.predicted).slice(-1)[0]?.price || 0;
-  const previousPrice = data.filter((d) => !d.predicted).slice(-2)[0]?.price || 0;
-  const change = currentPrice - previousPrice;
-  const changePercent = ((change / previousPrice) * 100).toFixed(2);
-  const isUp = change >= 0;
-
-  // Split into actual and predicted
   const actualData = data.filter((d) => !d.predicted);
   const predictedData = data.filter((d) => d.predicted);
-  // Overlap last actual point for smooth line
-  const predWithBridge = actualData.length > 0
-    ? [actualData[actualData.length - 1], ...predictedData]
-    : predictedData;
+
+  const currentPrice = actualData[actualData.length - 1]?.price || 0;
+  const previousPrice = actualData[actualData.length - 2]?.price || 0;
+  const change = currentPrice - previousPrice;
+  const changePercent = previousPrice ? ((change / previousPrice) * 100).toFixed(2) : '0';
+  const isUp = change >= 0;
 
   const allPrices = data.map((d) => d.price);
-  const minPrice = Math.floor(Math.min(...allPrices) - 2);
-  const maxPrice = Math.ceil(Math.max(...allPrices) + 2);
+  const minPrice = Math.floor(Math.min(...allPrices) - 3);
+  const maxPrice = Math.ceil(Math.max(...allPrices) + 3);
 
   const todayDate = '2026-03-19';
+
+  // For bridging actual → predicted line
+  const bridgedData = useMemo(() => {
+    if (actualData.length === 0 || predictedData.length === 0) return data;
+    const lastActual = actualData[actualData.length - 1];
+    // Mark the last actual point as also appearing in predicted
+    return data.map((d) => ({
+      ...d,
+      actualPrice: d.predicted ? (d.date === predictedData[0]?.date ? null : null) : d.price,
+      predictedPrice: d.predicted ? d.price : (d === lastActual ? d.price : null),
+    }));
+  }, [data, actualData, predictedData]);
+
+  const horizonLabel = horizon === '1W' ? '1 Week' : horizon === '1M' ? '1 Month' : '1 Year';
+  const forecastEnd = predictedData.length > 0 ? predictedData[predictedData.length - 1] : null;
 
   return (
     <div className="flex flex-col h-full">
@@ -69,6 +81,9 @@ export default function PricePanel() {
               </button>
             ))}
           </div>
+          <span className="text-[10px] px-2 py-0.5 rounded bg-oil-blue/10 text-oil-blue border border-oil-blue/20 font-bold">
+            {horizonLabel} Forecast
+          </span>
         </div>
 
         {/* Current price */}
@@ -83,40 +98,37 @@ export default function PricePanel() {
               isUp ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
             }`}
           >
-            {isUp ? '+' : ''}
-            {change.toFixed(2)} ({isUp ? '+' : ''}
-            {changePercent}%)
+            {isUp ? '+' : ''}{change.toFixed(2)} ({isUp ? '+' : ''}{changePercent}%)
           </div>
         </div>
       </div>
 
       {/* Chart */}
-      <div className="flex-1 px-2 py-1">
+      <div className="flex-1 px-2 py-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart
-            data={data}
+            data={bridgedData}
             margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
           >
             <defs>
-              <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#ff6b35" stopOpacity={0.3} />
                 <stop offset="100%" stopColor="#ff6b35" stopOpacity={0} />
               </linearGradient>
-              <linearGradient id="predGradient" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id="predGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.2} />
                 <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid
-              strokeDasharray="3 3"
-              stroke="#1e293b"
-              vertical={false}
-            />
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
             <XAxis
               dataKey="date"
               tick={{ fill: '#475569', fontSize: 10 }}
               tickFormatter={(v) => {
                 const d = new Date(v);
+                if (horizon === '1Y') {
+                  return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+                }
                 return `${d.getMonth() + 1}/${d.getDate()}`;
               }}
               axisLine={{ stroke: '#1e293b' }}
@@ -141,61 +153,51 @@ export default function PricePanel() {
               }}
               labelStyle={{ color: '#94a3b8', fontSize: 11, marginBottom: 4 }}
               itemStyle={{ color: '#e2e8f0', fontSize: 13, fontWeight: 600 }}
-              formatter={(value: number, name: string) => [
-                `$${value.toFixed(2)}`,
-                name === 'price' ? benchmark.toUpperCase() : 'Predicted',
-              ]}
+              formatter={(value: number | null, name: string) => {
+                if (value === null) return [null, null];
+                return [
+                  `$${value.toFixed(2)}`,
+                  name === 'actualPrice' ? benchmark.toUpperCase() : `Predicted (${horizonLabel})`,
+                ];
+              }}
               labelFormatter={(label) => {
                 const d = new Date(label);
-                return d.toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                });
+                return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
               }}
             />
             <ReferenceLine
               x={todayDate}
               stroke="#475569"
               strokeDasharray="4 4"
-              label={{
-                value: 'TODAY',
-                fill: '#64748b',
-                fontSize: 9,
-                position: 'insideTopRight',
-              }}
+              label={{ value: 'TODAY', fill: '#64748b', fontSize: 9, position: 'insideTopRight' }}
             />
-
-            {/* Actual price area */}
             <Area
               type="monotone"
-              dataKey={(d: typeof data[0]) => (d.predicted ? null : d.price)}
+              dataKey="actualPrice"
               stroke="#ff6b35"
               strokeWidth={2}
-              fill="url(#priceGradient)"
+              fill="url(#priceGrad)"
               dot={false}
               connectNulls={false}
-              name="price"
+              name="actualPrice"
             />
-
-            {/* Predicted area */}
             <Area
               type="monotone"
-              dataKey={(d: typeof data[0]) => (d.predicted ? d.price : null)}
+              dataKey="predictedPrice"
               stroke="#3b82f6"
               strokeWidth={2}
               strokeDasharray="6 3"
-              fill="url(#predGradient)"
+              fill="url(#predGrad)"
               dot={false}
-              connectNulls={false}
-              name="predicted"
+              connectNulls
+              name="predictedPrice"
             />
           </AreaChart>
         </ResponsiveContainer>
       </div>
 
       {/* Quick stats */}
-      <div className="flex gap-4 px-4 py-2 border-t border-oil-border text-[10px]">
+      <div className="flex gap-4 px-4 py-2 border-t border-oil-border text-[10px] flex-shrink-0">
         <div>
           <span className="text-slate-500">Spread</span>
           <span className="ml-1 text-oil-gold font-bold">
@@ -203,16 +205,20 @@ export default function PricePanel() {
           </span>
         </div>
         <div>
-          <span className="text-slate-500">30D Range</span>
+          <span className="text-slate-500">History Range</span>
           <span className="ml-1 text-slate-300 font-mono">
             ${Math.min(...actualData.map((d) => d.price)).toFixed(0)}-${Math.max(...actualData.map((d) => d.price)).toFixed(0)}
           </span>
         </div>
         <div>
-          <span className="text-slate-500">Forecast Q2</span>
+          <span className="text-slate-500">Forecast End</span>
           <span className="ml-1 text-blue-400 font-bold">
-            ${predictedData.length > 0 ? predictedData[predictedData.length - 1].price.toFixed(0) : '—'}
+            {forecastEnd ? `$${forecastEnd.price.toFixed(0)}` : '—'}
           </span>
+        </div>
+        <div>
+          <span className="text-slate-500">Horizon</span>
+          <span className="ml-1 text-oil-blue font-bold">{horizonLabel}</span>
         </div>
       </div>
     </div>
